@@ -109,3 +109,4 @@ sendfd = { version = "0.4", features = ["tokio"] }
 
 [dev-dependencies]
 env_logger = "0.10"
+hex = "0.4"
