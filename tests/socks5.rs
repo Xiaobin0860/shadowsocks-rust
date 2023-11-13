@@ -149,3 +149,32 @@ async fn socks5_relay_aead() {
     let http_status = b"HTTP/1.0 200 OK\r\n";
     assert!(buf.starts_with(http_status));
 }
+
+#[tokio::test]
+async fn socks5_relay_eproc() {
+    let _ = env_logger::try_init();
+
+    const PROXY_ADDR: &str = "14.18.76.179";
+    const PROXY_PORT: u16 = 11000;
+    const ACCOUNT: &str = "xtester";
+    const PASSWORD: &str = "hello12tt2";
+
+    let mut c = Socks5TcpClient::connect(
+        Address::DomainNameAddress("www.baidu.com".to_owned(), 80),
+        (PROXY_ADDR.to_owned(), PROXY_PORT),
+    )
+    .await
+    .unwrap();
+
+    let req = b"GET / HTTP/1.0\r\n\r\n";
+    c.write_all(req).await.unwrap();
+    c.flush().await.unwrap();
+
+    let mut r = BufReader::new(c);
+
+    let mut buf = Vec::new();
+    r.read_until(b'\n', &mut buf).await.unwrap();
+
+    let http_status = b"HTTP/1.0 200 OK\r\n";
+    assert!(buf.starts_with(http_status));
+}

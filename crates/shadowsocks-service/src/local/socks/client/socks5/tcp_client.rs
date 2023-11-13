@@ -41,7 +41,7 @@ impl Socks5TcpClient {
         let mut s = TcpStream::connect(proxy).await?;
 
         // 1. Handshake
-        let hs = HandshakeRequest::new(vec![socks5::SOCKS5_AUTH_METHOD_NONE]);
+        let hs = HandshakeRequest::new(vec![socks5::SOCKS5_AUTH_METHOD_NONE, socks5::SOCKS5_AUTH_METHOD_EPROC]);
         trace!("client connected, going to send handshake: {:?}", hs);
 
         hs.write_to(&mut s).await?;
@@ -49,7 +49,10 @@ impl Socks5TcpClient {
         let hsp = HandshakeResponse::read_from(&mut s).await?;
 
         trace!("got handshake response: {:?}", hsp);
-        assert_eq!(hsp.chosen_method, socks5::SOCKS5_AUTH_METHOD_NONE);
+        // assert_eq!(hsp.chosen_method, socks5::SOCKS5_AUTH_METHOD_NONE);
+        if hsp.chosen_method == socks5::SOCKS5_AUTH_METHOD_EPROC {
+            // send EPROC auth
+        }
 
         // 2. Send request header
         let h = TcpRequestHeader::new(Command::TcpConnect, addr.into());

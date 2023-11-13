@@ -20,6 +20,7 @@ pub use self::consts::{
     SOCKS5_AUTH_METHOD_NONE,
     SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE,
     SOCKS5_AUTH_METHOD_PASSWORD,
+    SOCKS5_AUTH_METHOD_EPROC,
 };
 
 #[rustfmt::skip]
@@ -29,6 +30,7 @@ mod consts {
     pub const SOCKS5_AUTH_METHOD_NONE:                 u8 = 0x00;
     pub const SOCKS5_AUTH_METHOD_GSSAPI:               u8 = 0x01;
     pub const SOCKS5_AUTH_METHOD_PASSWORD:             u8 = 0x02;
+    pub const SOCKS5_AUTH_METHOD_EPROC:                u8 = 0x40;
     pub const SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE:       u8 = 0xff;
 
     pub const SOCKS5_CMD_TCP_CONNECT:                  u8 = 0x01;
@@ -731,12 +733,16 @@ impl HandshakeRequest {
 #[derive(Clone, Debug, Copy)]
 pub struct HandshakeResponse {
     pub chosen_method: u8,
+    pub token: u32,
 }
 
 impl HandshakeResponse {
     /// Creates a handshake response
     pub fn new(cm: u8) -> HandshakeResponse {
-        HandshakeResponse { chosen_method: cm }
+        HandshakeResponse {
+            chosen_method: cm,
+            token: 0,
+        }
     }
 
     /// Read from a reader
@@ -750,10 +756,21 @@ impl HandshakeResponse {
         let ver = buf[0];
         let met = buf[1];
 
+        let token = if met == consts::SOCKS5_AUTH_METHOD_EPROC {
+            let mut buf = [0u8; 4];
+            let _ = r.read_exact(&mut buf).await?;
+            u32::from_be_bytes(buf)
+        } else {
+            0
+        };
+
         if ver != consts::SOCKS5_VERSION {
             Err(Error::UnsupportedSocksVersion(ver))
         } else {
-            Ok(HandshakeResponse { chosen_method: met })
+            Ok(HandshakeResponse {
+                chosen_method: met,
+                token,
+            })
         }
     }
 
