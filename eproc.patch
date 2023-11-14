@@ -1,0 +1,192 @@
+diff --git a/crates/shadowsocks-service/src/local/socks/client/socks5/tcp_client.rs b/crates/shadowsocks-service/src/local/socks/client/socks5/tcp_client.rs
+index fb1ae607..c7f99f4b 100644
+--- a/crates/shadowsocks-service/src/local/socks/client/socks5/tcp_client.rs
++++ b/crates/shadowsocks-service/src/local/socks/client/socks5/tcp_client.rs
+@@ -8,6 +8,7 @@ use std::{
+ 
+ use log::trace;
+ use pin_project::pin_project;
++use shadowsocks::relay::eproc::{EprocAuthRequest, EprocAuthResponse};
+ use shadowsocks::relay::socks5::{
+     self,
+     Address,
+@@ -67,6 +68,54 @@ impl Socks5TcpClient {
+         Ok(Socks5TcpClient { stream: s })
+     }
+ 
++    /// Connects to `addr` via `proxy`
++    pub async fn connect_eproc<A, P>(
++        addr: A,
++        proxy: P,
++        user: &str,
++        pass: &str,
++        session: u64,
++    ) -> Result<Socks5TcpClient, Error>
++    where
++        A: Into<Address>,
++        P: ToSocketAddrs,
++    {
++        let mut s = TcpStream::connect(proxy).await?;
++
++        // 1. Handshake
++        let hs = HandshakeRequest::new(vec![socks5::SOCKS5_AUTH_METHOD_EPROC]);
++        trace!("client connected, going to send handshake: {:?}", hs);
++
++        hs.write_to(&mut s).await?;
++
++        let hsp = HandshakeResponse::read_from(&mut s).await?;
++
++        trace!("got handshake response: {:?}", hsp);
++        assert_eq!(hsp.chosen_method, socks5::SOCKS5_AUTH_METHOD_EPROC);
++        // eproc auth
++        let auth_req = EprocAuthRequest::new(user, pass, session, hsp.token);
++        auth_req.write_to(&mut s).await?;
++        let auth_rsp = EprocAuthResponse::read_from(&mut s).await?;
++        if auth_rsp.status != 0x00 {
++            return Err(Error::Reply(Reply::GeneralFailure));
++        }
++
++        // 2. Send request header
++        let h = TcpRequestHeader::new(Command::TcpConnect, addr.into());
++        trace!("going to connect, req: {:?}", h);
++        h.write_to(&mut s).await?;
++
++        let hp = TcpResponseHeader::read_from(&mut s).await?;
++
++        trace!("got response: {:?}", hp);
++        match hp.reply {
++            Reply::Succeeded => (),
++            r => return Err(Error::Reply(r)),
++        }
++
++        Ok(Socks5TcpClient { stream: s })
++    }
++
+     /// UDP Associate `addr` via `proxy`
+     ///
+     /// According to RFC, `addr` is the address that your UDP socket binds to
+diff --git a/crates/shadowsocks/src/relay/mod.rs b/crates/shadowsocks/src/relay/mod.rs
+index 52b05a84..deb3a05d 100644
+--- a/crates/shadowsocks/src/relay/mod.rs
++++ b/crates/shadowsocks/src/relay/mod.rs
+@@ -5,6 +5,7 @@ pub use self::socks5::Address;
+ pub mod socks5;
+ pub mod tcprelay;
+ pub mod udprelay;
++pub mod eproc;
+ 
+ /// AEAD 2022 maximum padding length
+ #[cfg(feature = "aead-cipher-2022")]
+diff --git a/crates/shadowsocks/src/relay/socks5.rs b/crates/shadowsocks/src/relay/socks5.rs
+index 7477f2fe..4fcbe120 100644
+--- a/crates/shadowsocks/src/relay/socks5.rs
++++ b/crates/shadowsocks/src/relay/socks5.rs
+@@ -20,6 +20,7 @@ pub use self::consts::{
+     SOCKS5_AUTH_METHOD_NONE,
+     SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE,
+     SOCKS5_AUTH_METHOD_PASSWORD,
++    SOCKS5_AUTH_METHOD_EPROC,
+ };
+ 
+ #[rustfmt::skip]
+@@ -29,6 +30,7 @@ mod consts {
+     pub const SOCKS5_AUTH_METHOD_NONE:                 u8 = 0x00;
+     pub const SOCKS5_AUTH_METHOD_GSSAPI:               u8 = 0x01;
+     pub const SOCKS5_AUTH_METHOD_PASSWORD:             u8 = 0x02;
++    pub const SOCKS5_AUTH_METHOD_EPROC:                u8 = 0x40;
+     pub const SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE:       u8 = 0xff;
+ 
+     pub const SOCKS5_CMD_TCP_CONNECT:                  u8 = 0x01;
+@@ -169,6 +171,8 @@ pub enum Error {
+     UnsupportedCommand(u8),
+     #[error("unsupported username/password authentication version {0:#x}")]
+     UnsupportedPasswdAuthVersion(u8),
++    #[error("unsupported eproc authentication version {0:#x}")]
++    UnsupportedEprocAuthVersion(u8),
+     #[error("username/password authentication invalid request")]
+     PasswdAuthInvalidRequest,
+     #[error("{0}")]
+@@ -197,6 +201,7 @@ impl Error {
+             Error::UnsupportedSocksVersion(..) => Reply::GeneralFailure,
+             Error::UnsupportedCommand(..) => Reply::CommandNotSupported,
+             Error::UnsupportedPasswdAuthVersion(..) => Reply::GeneralFailure,
++            Error::UnsupportedEprocAuthVersion(..) => Reply::GeneralFailure,
+             Error::PasswdAuthInvalidRequest => Reply::GeneralFailure,
+             Error::Reply(r) => r,
+         }
+@@ -731,12 +736,13 @@ impl HandshakeRequest {
+ #[derive(Clone, Debug, Copy)]
+ pub struct HandshakeResponse {
+     pub chosen_method: u8,
++    pub token: u32,
+ }
+ 
+ impl HandshakeResponse {
+     /// Creates a handshake response
+     pub fn new(cm: u8) -> HandshakeResponse {
+-        HandshakeResponse { chosen_method: cm }
++        HandshakeResponse { chosen_method: cm, token: 0 }
+     }
+ 
+     /// Read from a reader
+@@ -750,10 +756,18 @@ impl HandshakeResponse {
+         let ver = buf[0];
+         let met = buf[1];
+ 
++        let token = if met == consts::SOCKS5_AUTH_METHOD_EPROC {
++            let mut buf = [0u8; 4];
++            let _ = r.read_exact(&mut buf).await?;
++            u32::from_be_bytes(buf)
++        } else {
++            0
++        };
++
+         if ver != consts::SOCKS5_VERSION {
+             Err(Error::UnsupportedSocksVersion(ver))
+         } else {
+-            Ok(HandshakeResponse { chosen_method: met })
++            Ok(HandshakeResponse { chosen_method: met, token })
+         }
+     }
+ 
+diff --git a/tests/socks5.rs b/tests/socks5.rs
+index c09299dc..12fdb9c9 100644
+--- a/tests/socks5.rs
++++ b/tests/socks5.rs
+@@ -149,3 +149,36 @@ async fn socks5_relay_aead() {
+     let http_status = b"HTTP/1.0 200 OK\r\n";
+     assert!(buf.starts_with(http_status));
+ }
++
++#[tokio::test]
++async fn test_socks5_eproc() {
++    let _ = env_logger::try_init();
++
++    const PROXY_ADDR: &str = "14.18.76.179";
++    const PROXY_PORT: u16 = 11000;
++    const ACCOUNT: &str = "xl";
++    const PASSWORD: &str = "hello12tt2";
++
++    let session: u64 = rand::random();
++    let mut c = Socks5TcpClient::connect_eproc(
++        Address::DomainNameAddress("www.baidu.com".to_owned(), 80),
++        (PROXY_ADDR.to_owned(), PROXY_PORT),
++        ACCOUNT,
++        PASSWORD,
++        session,
++    )
++    .await
++    .unwrap();
++
++    let req = b"GET / HTTP/1.0\r\n\r\n";
++    c.write_all(req).await.unwrap();
++    c.flush().await.unwrap();
++
++    let mut r = BufReader::new(c);
++
++    let mut buf = Vec::new();
++    r.read_until(b'\n', &mut buf).await.unwrap();
++
++    let http_status = b"HTTP/1.0 200 OK\r\n";
++    assert!(buf.starts_with(http_status));
++}
