@@ -16,11 +16,8 @@ use bytes::{Buf, BufMut, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub use self::consts::{
-    SOCKS5_AUTH_METHOD_GSSAPI,
-    SOCKS5_AUTH_METHOD_NONE,
-    SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE,
+    SOCKS5_AUTH_METHOD_EPROC, SOCKS5_AUTH_METHOD_GSSAPI, SOCKS5_AUTH_METHOD_NONE, SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE,
     SOCKS5_AUTH_METHOD_PASSWORD,
-    SOCKS5_AUTH_METHOD_EPROC,
 };
 
 #[rustfmt::skip]
@@ -171,6 +168,8 @@ pub enum Error {
     UnsupportedCommand(u8),
     #[error("unsupported username/password authentication version {0:#x}")]
     UnsupportedPasswdAuthVersion(u8),
+    #[error("unsupported eproc authentication version {0:#x}")]
+    UnsupportedEprocAuthVersion(u8),
     #[error("username/password authentication invalid request")]
     PasswdAuthInvalidRequest,
     #[error("{0}")]
@@ -199,6 +198,7 @@ impl Error {
             Error::UnsupportedSocksVersion(..) => Reply::GeneralFailure,
             Error::UnsupportedCommand(..) => Reply::CommandNotSupported,
             Error::UnsupportedPasswdAuthVersion(..) => Reply::GeneralFailure,
+            Error::UnsupportedEprocAuthVersion(..) => Reply::GeneralFailure,
             Error::PasswdAuthInvalidRequest => Reply::GeneralFailure,
             Error::Reply(r) => r,
         }

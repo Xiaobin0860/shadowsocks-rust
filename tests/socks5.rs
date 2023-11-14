@@ -13,8 +13,7 @@ use tokio::{
 use shadowsocks_service::{
     config::{Config, ConfigType, LocalConfig, LocalInstanceConfig, ProtocolType, ServerInstanceConfig},
     local::socks::client::socks5::Socks5TcpClient,
-    run_local,
-    run_server,
+    run_local, run_server,
     shadowsocks::{
         config::{Mode, ServerAddr, ServerConfig},
         crypto::CipherKind,
@@ -156,12 +155,16 @@ async fn socks5_relay_eproc() {
 
     const PROXY_ADDR: &str = "14.18.76.179";
     const PROXY_PORT: u16 = 11000;
-    const ACCOUNT: &str = "xtester";
+    const ACCOUNT: &str = "xl";
     const PASSWORD: &str = "hello12tt2";
 
-    let mut c = Socks5TcpClient::connect(
+    let session: u64 = rand::random();
+    let mut c = Socks5TcpClient::connect_eproc(
         Address::DomainNameAddress("www.baidu.com".to_owned(), 80),
         (PROXY_ADDR.to_owned(), PROXY_PORT),
+        ACCOUNT,
+        PASSWORD,
+        session,
     )
     .await
     .unwrap();

@@ -8,16 +8,9 @@ use std::{
 
 use log::trace;
 use pin_project::pin_project;
+use shadowsocks::relay::eproc::{EprocAuthRequest, EprocAuthResponse};
 use shadowsocks::relay::socks5::{
-    self,
-    Address,
-    Command,
-    Error,
-    HandshakeRequest,
-    HandshakeResponse,
-    Reply,
-    TcpRequestHeader,
-    TcpResponseHeader,
+    self, Address, Command, Error, HandshakeRequest, HandshakeResponse, Reply, TcpRequestHeader, TcpResponseHeader,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -41,7 +34,7 @@ impl Socks5TcpClient {
         let mut s = TcpStream::connect(proxy).await?;
 
         // 1. Handshake
-        let hs = HandshakeRequest::new(vec![socks5::SOCKS5_AUTH_METHOD_NONE, socks5::SOCKS5_AUTH_METHOD_EPROC]);
+        let hs = HandshakeRequest::new(vec![socks5::SOCKS5_AUTH_METHOD_NONE]);
         trace!("client connected, going to send handshake: {:?}", hs);
 
         hs.write_to(&mut s).await?;
@@ -49,9 +42,54 @@ impl Socks5TcpClient {
         let hsp = HandshakeResponse::read_from(&mut s).await?;
 
         trace!("got handshake response: {:?}", hsp);
-        // assert_eq!(hsp.chosen_method, socks5::SOCKS5_AUTH_METHOD_NONE);
-        if hsp.chosen_method == socks5::SOCKS5_AUTH_METHOD_EPROC {
-            // send EPROC auth
+        assert_eq!(hsp.chosen_method, socks5::SOCKS5_AUTH_METHOD_NONE);
+
+        // 2. Send request header
+        let h = TcpRequestHeader::new(Command::TcpConnect, addr.into());
+        trace!("going to connect, req: {:?}", h);
+        h.write_to(&mut s).await?;
+
+        let hp = TcpResponseHeader::read_from(&mut s).await?;
+
+        trace!("got response: {:?}", hp);
+        match hp.reply {
+            Reply::Succeeded => (),
+            r => return Err(Error::Reply(r)),
+        }
+
+        Ok(Socks5TcpClient { stream: s })
+    }
+
+    /// Connects to `addr` via `proxy`
+    pub async fn connect_eproc<A, P>(
+        addr: A,
+        proxy: P,
+        user: &str,
+        pass: &str,
+        session: u64,
+    ) -> Result<Socks5TcpClient, Error>
+    where
+        A: Into<Address>,
+        P: ToSocketAddrs,
+    {
+        let mut s = TcpStream::connect(proxy).await?;
+
+        // 1. Handshake
+        let hs = HandshakeRequest::new(vec![socks5::SOCKS5_AUTH_METHOD_EPROC]);
+        trace!("client connected, going to send handshake: {:?}", hs);
+
+        hs.write_to(&mut s).await?;
+
+        let hsp = HandshakeResponse::read_from(&mut s).await?;
+
+        trace!("got handshake response: {:?}", hsp);
+        assert_eq!(hsp.chosen_method, socks5::SOCKS5_AUTH_METHOD_EPROC);
+        // eproc auth
+        let auth_req = EprocAuthRequest::new(user, pass, session, hsp.token);
+        auth_req.write_to(&mut s).await?;
+        let auth_rsp = EprocAuthResponse::read_from(&mut s).await?;
+        if auth_rsp.status != 0x00 {
+            return Err(Error::Reply(Reply::GeneralFailure));
         }
 
         // 2. Send request header
